@@ -3,7 +3,7 @@ import pandas as pd
 import os
 import argparse
 
-def load_data(output_dir):
+def run_preprocessing(output_dir):
    
     print("Starting preprocessing job...")
 
@@ -24,4 +24,4 @@ if __name__ == "__main__":
                        default="./processed_output"
                        )
     args = parser.parse_args()
-    load_data(args.output_dir)
+    run_preprocessing(args.output_dir)
