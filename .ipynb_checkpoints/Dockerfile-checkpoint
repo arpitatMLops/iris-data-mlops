@@ -2,7 +2,7 @@
 FROM python:3.9-slim
 
 # Set the working directory
-WORKDIR /opt/ml/code
+WORKDIR /opt/ml
 
 # Install basic system dependencies (build-essential is often needed by sklearn)
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -10,14 +10,16 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy requirements file and install dependencies
-COPY Docker/requirements.txt /opt/ml/code/requirements.txt
-RUN pip install --upgrade pip && pip install -r /opt/ml/code/requirements.txt
+COPY requirements.txt /opt/ml/requirements.txt
+RUN pip install --upgrade pip && pip install -r /opt/ml/requirements.txt
 
 # Copy all source code into the image
-COPY . /opt/ml/code/
+COPY . /opt/ml/
 
 # Environment variables for clean logging
+ENV PYTHONPATH=/opt/ml
 ENV PYTHONUNBUFFERED=TRUE
 
-# Define the entrypoint — SageMaker calls this when the training job starts
-ENTRYPOINT ["python", "/opt/ml/code/src/model_training.py"]
+# Define the entrypoint — SageMaker calls this
+ENTRYPOINT ["python", "-m", "src.main"]
+

@@ -1,0 +1,214 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Iris pipeline (Preprocess -> Train -> Inference) via Step Functions + SageMaker
+
+Parameters:
+  ProjectName:
+    Type: String
+    Default: prototype-iris
+  ECRImageURI:
+    Type: String
+    Description: Full ECR image URI
+  S3BucketName:
+    Type: String
+    Description: Existing S3 bucket for outputs
+  SageMakerRoleArn:
+    Type: String
+    Description: ARN of the SageMaker Execution Role used by Processing/Training
+
+Resources:
+  StepFnLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/aws/stepfunctions/${ProjectName}-pipeline"
+      RetentionInDays: 14
+
+  # IAM role for Step Functions (no explicit RoleName)
+  RoleStepFunctions:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: states.amazonaws.com
+            Action: sts:AssumeRole
+      MaxSessionDuration: 3600
+      Path: "/"
+      Policies:
+        - PolicyName: StepFunctionSageMakerAccessInline
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              # X-Ray permissions
+              - Effect: Allow
+                Action:
+                  - xray:PutTraceSegments
+                  - xray:PutTelemetryRecords
+                  - xray:GetSamplingRules
+                  - xray:GetSamplingTargets
+                Resource: '*'
+
+              # SageMaker training/processing actions
+              - Effect: Allow
+                Action:
+                  - sagemaker:CreateTrainingJob
+                  - sagemaker:DescribeTrainingJob
+                  - sagemaker:StopTrainingJob
+                  - sagemaker:CreateProcessingJob
+                  - sagemaker:DescribeProcessingJob
+                  - sagemaker:StopProcessingJob
+                  - sagemaker:ListTags
+                  - sagemaker:AddTags
+                  - sagemaker:DeleteTags
+                Resource:
+                  - arn:aws:sagemaker:eu-north-1:*:training-job/*
+                  - arn:aws:sagemaker:eu-north-1:*:processing-job/*
+
+              # Allow passing the SageMaker execution role to SageMaker
+              - Effect: Allow
+                Action: iam:PassRole
+                Resource: !Ref SageMakerRoleArn
+                Condition:
+                  StringEquals:
+                    iam:PassedToService: sagemaker.amazonaws.com
+
+              # Events (Step Functions ↔ SageMaker job events)
+              - Effect: Allow
+                Action:
+                  - events:PutTargets
+                  - events:PutRule
+                  - events:DescribeRule
+                Resource:
+                  - arn:aws:events:eu-north-1:*:rule/StepFunctionsGetEventsForSageMakerProcessingJobsRule
+                  - arn:aws:events:eu-north-1:*:rule/StepFunctionsGetEventsForSageMakerTrainingJobsRule
+
+              # CloudWatch Logs / Log delivery permissions
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogDelivery
+                  - logs:GetLogDelivery
+                  - logs:UpdateLogDelivery
+                  - logs:DeleteLogDelivery
+                  - logs:ListLogDeliveries
+                  - logs:PutResourcePolicy
+                  - logs:DescribeLogGroups
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: "*"
+
+  # --- State machine (parameterized) ---
+  StateMachine3682c0c9:
+    Type: AWS::StepFunctions::StateMachine
+    Properties:
+      StateMachineName: !Sub "${ProjectName}-pipeline"
+      StateMachineType: STANDARD
+      RoleArn: !GetAtt RoleStepFunctions.Arn
+      EncryptionConfiguration:
+        Type: AWS_OWNED_KEY
+      LoggingConfiguration:
+        Level: ALL
+        IncludeExecutionData: true
+        Destinations:
+          - CloudWatchLogsLogGroup:
+              LogGroupArn: !GetAtt StepFnLogGroup.Arn
+      Definition:
+        Comment: Iris preprocess -> train -> inference
+        StartAt: Preprocess
+        States:
+          Preprocess:
+            Type: Task
+            Resource: arn:aws:states:::sagemaker:createProcessingJob.sync
+            Parameters:
+              ProcessingJobName.$: States.Format('iris-preprocess-{}', $.RunId)
+              RoleArn: !Ref SageMakerRoleArn
+              AppSpecification:
+                ImageUri: !Ref ECRImageURI
+              Environment:
+                STEP: preprocess
+              ProcessingResources:
+                ClusterConfig:
+                  InstanceCount: 1
+                  InstanceType: ml.t3.medium
+                  VolumeSizeInGB: 10
+              ProcessingOutputConfig:
+                Outputs:
+                  - OutputName: preprocessed
+                    S3Output:
+                      S3Uri.$: !Sub "States.Format('s3://${S3BucketName}/iris/output/{}/preprocessed', $.RunId)"
+                      LocalPath: /opt/ml/processing/output
+                      S3UploadMode: EndOfJob
+            ResultPath: $.Preprocess
+            Next: Train
+
+          Train:
+            Type: Task
+            Resource: arn:aws:states:::sagemaker:createTrainingJob.sync
+            Parameters:
+              TrainingJobName.$: States.Format('iris-train-{}', $.RunId)
+              RoleArn: !Ref SageMakerRoleArn
+              AlgorithmSpecification:
+                TrainingImage: !Ref ECRImageURI
+                TrainingInputMode: File
+              InputDataConfig:
+                - ChannelName: train
+                  DataSource:
+                    S3DataSource:
+                      S3DataType: S3Prefix
+                      S3Uri.$: !Sub "States.Format('s3://${S3BucketName}/iris/output/{}/preprocessed/', $.RunId)"
+                      S3DataDistributionType: FullyReplicated
+              OutputDataConfig:
+                S3OutputPath.$: !Sub "States.Format('s3://${S3BucketName}/iris/output/{}/model', $.RunId)"
+              ResourceConfig:
+                InstanceCount: 1
+                InstanceType: ml.m5.large
+                VolumeSizeInGB: 30
+              StoppingCondition:
+                MaxRuntimeInSeconds: 1800
+            ResultPath: $.Train
+            Next: Inference
+
+          Inference:
+            Type: Task
+            Resource: arn:aws:states:::sagemaker:createProcessingJob.sync
+            Parameters:
+              ProcessingJobName.$: States.Format('iris-infer-{}', $.RunId)
+              RoleArn: !Ref SageMakerRoleArn
+              AppSpecification:
+                ImageUri: !Ref ECRImageURI
+              Environment:
+                STEP: infer
+              ProcessingInputs:
+                - InputName: data
+                  S3Input:
+                    S3Uri.$: !Sub "States.Format('s3://${S3BucketName}/iris/output/{}/preprocessed/processed.csv', $.RunId)"
+                    LocalPath: /opt/ml/processing/input
+                    S3InputMode: File
+                    S3DataType: S3Prefix
+                - InputName: model
+                  S3Input:
+                    S3Uri.$: $.Train.ModelArtifacts.S3ModelArtifacts
+                    LocalPath: /opt/ml/processing/model
+                    S3InputMode: File
+                    S3DataType: S3Prefix
+              ProcessingOutputConfig:
+                Outputs:
+                  - OutputName: predictions
+                    S3Output:
+                      S3Uri.$: !Sub "States.Format('s3://${S3BucketName}/iris/output/{}/inference', $.RunId)"
+                      LocalPath: /opt/ml/processing/output
+                      S3UploadMode: EndOfJob
+              ProcessingResources:
+                ClusterConfig:
+                  InstanceCount: 1
+                  InstanceType: ml.t3.medium
+                  VolumeSizeInGB: 10
+            End: true
+
+Outputs:
+  StateMachineArn:
+    Description: Step Functions state machine ARN
+    Value: !Ref StateMachine3682c0c9
+  StepFunctionsRoleArn:
+    Description: Step Functions role ARN
+    Value: !GetAtt RoleStepFunctions.Arn

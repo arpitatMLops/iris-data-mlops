@@ -1,0 +1,76 @@
+{
+  "Comment": "Iris preprocess -> train",
+  "StartAt": "Preprocess",
+  "States": {
+    "Preprocess": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::sagemaker:createProcessingJob.sync",
+      "Parameters": {
+        "ProcessingJobName.$": "States.Format('iris-preprocess-{}', $.RunId)",
+        "RoleArn": "arn:aws:iam::182406535835:role/service-role/AmazonSageMaker-ExecutionRole-20251013T175169",
+        "AppSpecification": {
+          "ImageUri": "182406535835.dkr.ecr.eu-north-1.amazonaws.com/sagemaker-studio-d-x5rfkjrvcd2t:default-20251013T175168"
+        },
+        "Environment": {
+          "STEP": "preprocess"
+        },
+        "ProcessingResources": {
+          "ClusterConfig": {
+            "InstanceCount": 1,
+            "InstanceType": "ml.t3.medium",
+            "VolumeSizeInGB": 10
+          }
+        },
+        "ProcessingOutputConfig": {
+          "Outputs": [
+            {
+              "OutputName": "preprocessed",
+              "S3Output": {
+                "S3Uri.$": "States.Format('s3://iris-mlops-bucket-182406535835/iris/output/{}/preprocessed', $.RunId)",
+                "LocalPath": "/opt/ml/processing/output",
+                "S3UploadMode": "EndOfJob"
+              }
+            }
+          ]
+        }
+      },
+      "Next": "Train"
+    },
+    "Train": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::sagemaker:createTrainingJob.sync",
+      "Parameters": {
+        "TrainingJobName.$": "States.Format('iris-train-{}', $.RunId)",
+        "RoleArn": "arn:aws:iam::182406535835:role/service-role/AmazonSageMaker-ExecutionRole-20251013T175169",
+        "AlgorithmSpecification": {
+          "TrainingImage": "182406535835.dkr.ecr.eu-north-1.amazonaws.com/sagemaker-studio-d-x5rfkjrvcd2t:default-20251013T175168",
+          "TrainingInputMode": "File"
+        },
+        "InputDataConfig": [
+          {
+            "ChannelName": "train",
+            "DataSource": {
+              "S3DataSource": {
+                "S3DataType": "S3Prefix",
+                "S3Uri.$": "States.Format('s3://iris-mlops-bucket-182406535835/iris/output/{}/preprocessed/', $.RunId)",
+                "S3DataDistributionType": "FullyReplicated"
+              }
+            }
+          }
+        ],
+        "OutputDataConfig": {
+          "S3OutputPath.$": "States.Format('s3://iris-mlops-bucket-182406535835/iris/output/{}/model', $.RunId)"
+        },
+        "ResourceConfig": {
+          "InstanceCount": 1,
+          "InstanceType": "ml.m5.large",
+          "VolumeSizeInGB": 30
+        },
+        "StoppingCondition": {
+          "MaxRuntimeInSeconds": 1800
+        }
+      },
+      "End": true
+    }
+  }
+}

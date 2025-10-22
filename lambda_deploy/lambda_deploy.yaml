@@ -1,0 +1,107 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Lambda deployer for iris-mlops pipeline
+
+Parameters:
+  ProjectName:
+    Type: String
+    Default: iris-mlops
+  LambdaCodeBucket:
+    Type: String
+    Description: Bucket where lambda.zip is stored
+  LambdaCodeKey:
+    Type: String
+    Description: Key (object name) for lambda.zip
+  CFNTemplateS3:
+    Type: String
+    Description: S3 URL (s3://...) of the iris-mlops pipeline template
+  ECRImageURI:
+    Type: String
+  S3BucketName:
+    Type: String
+  SageMakerRoleArn:
+    Type: String
+
+Resources:
+  LambdaExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      Path: "/"
+      Policies:
+        - PolicyName: LambdaCFNPolicyInline
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              # CloudFormation operations
+              - Effect: Allow
+                Action:
+                  - cloudformation:CreateStack
+                  - cloudformation:UpdateStack
+                  - cloudformation:DeleteStack
+                  - cloudformation:DescribeStacks
+                  - cloudformation:DescribeStackEvents
+                  - cloudformation:GetTemplate
+                  - cloudformation:ListStacks
+                  - cloudformation:CreateChangeSet
+                  - cloudformation:ExecuteChangeSet
+                Resource: "*"
+
+              # S3 read access to template and code bucket
+              - Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:ListBucket
+                Resource:
+                  - !Sub "arn:aws:s3:::${LambdaCodeBucket}"
+                  - !Sub "arn:aws:s3:::${LambdaCodeBucket}/*"
+
+              # If the deployed pipeline needs passing roles, allow PassRole for the supplied SageMakerRoleArn
+              - Effect: Allow
+                Action:
+                  - iam:PassRole
+                Resource:
+                  - !Ref SageMakerRoleArn
+
+              # CloudWatch logs
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: "*"
+
+  LambdaFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub "${ProjectName}-trigger"
+      Description: Deploy or update iris-mlops pipeline CloudFormation stack
+      Handler: simple_cfn_trigger.lambda_handler
+      Runtime: python3.9
+      Timeout: 120
+      Role: !GetAtt LambdaExecutionRole.Arn
+      Code:
+        S3Bucket: !Ref LambdaCodeBucket
+        S3Key: !Ref LambdaCodeKey
+      Environment:
+        Variables:
+          PIPELINE_TEMPLATE_S3: !Ref CFNTemplateS3
+          ECR_IMAGE_URI: !Ref ECRImageURI
+          S3_BUCKET_NAME: !Ref S3BucketName
+          SAGEMAKER_ROLE_ARN: !Ref SageMakerRoleArn
+
+Outputs:
+  LambdaName:
+    Description: Name of the created Lambda
+    Value: !Ref LambdaFunction
+  LambdaArn:
+    Description: ARN of the Lambda
+    Value: !GetAtt LambdaFunction.Arn
+  LambdaRoleArn:
+    Description: IAM role used by the Lambda
+    Value: !GetAtt LambdaExecutionRole.Arn
