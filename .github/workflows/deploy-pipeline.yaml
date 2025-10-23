@@ -197,16 +197,28 @@ jobs:
           fi
 
           echo "Invoking deployer Lambda alias: $LAMBDA_ALIAS_ARN"
+          rm -f response.json
           aws lambda invoke \
             --function-name "$LAMBDA_ALIAS_ARN" \
             --payload file://payload.json \
             --cli-binary-format raw-in-base64-out \
             response.json || true
 
-          if [ ! -f response.json ]; then
-          echo "{}" > response.json
-          fi
+          echo "-------- raw response.json --------"
+          if [ -s response.json ]; then
+            cat response.json
+          else
+            echo "{}"
 
-          echo "response<<EOF" >> $GITHUB_OUTPUT
-          cat response.json >> $GITHUB_OUTPUT || true
-          echo "EOF" >> $GITHUB_OUTPUT
+            echo "{}" > response.json
+          fi
+          echo "-----------------------------------"
+
+          EXECUTION_ARN=$(jq -r '.executionArn // empty' response.json || echo "")
+          STATUS=$(jq -r '.status // empty' response.json || echo "")
+
+          echo "executionArn=$EXECUTION_ARN" >> $GITHUB_OUTPUT
+          echo "deployer_status=$STATUS" >> $GITHUB_OUTPUT
+
+          RAW=$(jq -c '.' response.json || echo "{}")
+          echo "raw_response=$RAW" >> $GITHUB_OUTPUT
