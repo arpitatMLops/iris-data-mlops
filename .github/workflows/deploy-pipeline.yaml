@@ -32,7 +32,6 @@ jobs:
         run: |
           sudo apt-get install -y zip jq || true
 
-
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v2
         with:
@@ -89,6 +88,40 @@ jobs:
           fi
           aws s3 cp infra.yaml "s3://${{ env.S3_BUCKET }}/${{ env.INFRA_TEMPLATE_KEY }}"
           aws s3 cp iris-mlops-pipeline.yaml "s3://${{ env.S3_BUCKET }}/${{ env.PIPELINE_TEMPLATE_KEY }}"
+
+      - name: Deploy deployer CloudFormation stack
+        env:
+          AWS_REGION: ${{ env.AWS_REGION }}
+          S3_BUCKET: ${{ env.S3_BUCKET }}
+          LAMBDA_S3_KEY: ${{ env.LAMBDA_S3_KEY }}
+          PIPELINE_TEMPLATE_KEY: ${{ env.PIPELINE_TEMPLATE_KEY }}
+          IMAGE_URI: ${{ env.IMAGE_URI }}
+        run: |
+          if [ ! -f lambda_deploy.yaml ]; then
+            echo "ERROR: lambda_deploy.yaml not found in repository root"
+            exit 1
+          fi
+
+          # Ensure IMAGE_URI fallback (in case Docker build was skipped)
+          if [ -z "${IMAGE_URI}" ] || [ "${IMAGE_URI}" = "" ]; then
+            # construct image uri from account id (safe fallback)
+            IMAGE_URI="${{ steps.acct.outputs.AWS_ACCOUNT_ID }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com/${{ env.ECR_REPOSITORY }}:${{ env.ECR_IMAGE_TAG }}"
+            echo "IMAGE_URI set to ${IMAGE_URI}"
+          fi
+
+          echo "Deploying CloudFormation stack iris-mlops-lambda-deployer from lambda_deploy.yaml ..."
+          aws cloudformation deploy \
+            --stack-name iris-mlops-lambda-deployer \
+            --template-file lambda_deploy.yaml \
+            --capabilities CAPABILITY_NAMED_IAM \
+            --parameter-overrides \
+              ProjectName=iris-mlops \
+              LambdaCodeBucket=${{ env.S3_BUCKET }} \
+              LambdaCodeKey=${{ env.LAMBDA_S3_KEY }} \
+              CFNTemplateS3=s3://${{ env.S3_BUCKET }}/${{ env.PIPELINE_TEMPLATE_KEY }} \
+              ECRImageURI=${IMAGE_URI} \
+              S3BucketName=${{ env.S3_BUCKET }} \
+              SageMakerRoleArn=${{ secrets.SAGEMAKER_ROLE_ARN }}
 
       - name: Build payload.json for deployer Lambda
         env:
