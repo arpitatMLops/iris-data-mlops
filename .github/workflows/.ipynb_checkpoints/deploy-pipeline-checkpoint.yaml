@@ -6,10 +6,11 @@ on:
 
 permissions:
   contents: read
+  id-token: write
 
 env:
-  AWS_REGION: eu-north-1                
-  ECR_REPOSITORY: iris-mlops-prototype  
+  AWS_REGION: eu-north-1
+  ECR_REPOSITORY: iris-mlops-prototype
   ECR_IMAGE_TAG: latest
   S3_BUCKET: iris-mlops-bucket-182406535835
   LAMBDA_S3_KEY: lambda_deploy/lambda.zip
@@ -27,6 +28,11 @@ jobs:
       - name: Checkout repo
         uses: actions/checkout@v4
 
+      - name: Install OS deps (zip, jq, docker is provided by runner)
+        run: |
+          sudo apt-get update -y
+          sudo apt-get install -y zip jq
+
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v2
         with:
@@ -39,30 +45,38 @@ jobs:
         run: |
           echo "AWS_ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)" >> $GITHUB_OUTPUT
 
-      - name: Login to ECR
+      - name: Create ECR repo if missing and login
         run: |
+          ECR_REGISTRY="${{ steps.acct.outputs.AWS_ACCOUNT_ID }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com"
+          echo "ECR_REGISTRY=$ECR_REGISTRY" >> $GITHUB_ENV
           aws ecr describe-repositories --repository-names "${{ env.ECR_REPOSITORY }}" >/dev/null 2>&1 || \
             aws ecr create-repository --repository-name "${{ env.ECR_REPOSITORY }}" || true
-          ECR_REGISTRY="${{ steps.acct.outputs.AWS_ACCOUNT_ID }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com"
-          echo "ECR_REGISTRY=${ECR_REGISTRY}" >> $GITHUB_ENV
-          aws ecr get-login-password --region ${{ env.AWS_REGION }} | docker login --username AWS --password-stdin $ECR_REGISTRY
+          aws ecr get-login-password --region "${{ env.AWS_REGION }}" | docker login --username AWS --password-stdin "$ECR_REGISTRY"
 
       - name: Build and push Docker image to ECR
-        run: |
-          ECR_REGISTRY=${{ env.AWS_ACCOUNT_ID }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com
-          IMAGE="$ECR_REGISTRY/${{ env.ECR_REPOSITORY }}:${{ env.ECR_IMAGE_TAG }}"
-          docker build -t "$IMAGE" .
-          docker push "$IMAGE"
         env:
-          AWS_ACCOUNT_ID: ${{ steps.acct.outputs.AWS_ACCOUNT_ID }}
+          ECR_REGISTRY: ${{ env.ECR_REGISTRY || steps.acct.outputs.AWS_ACCOUNT_ID }}
+        run: |
+          # compute registry and image
+          ECR_REGISTRY="${{ steps.acct.outputs.AWS_ACCOUNT_ID }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com"
+          IMAGE="${ECR_REGISTRY}/${{ env.ECR_REPOSITORY }}:${{ env.ECR_IMAGE_TAG }}"
+
+          # if Dockerfile exists, build and push; otherwise skip
+          if [ -f Dockerfile ]; then
+            docker build -t "$IMAGE" .
+            docker push "$IMAGE"
+            echo "IMAGE_URI=$IMAGE" >> $GITHUB_ENV
+          else
+            echo "No Dockerfile found, skipping Docker build/push"
+          fi
 
       - name: Zip Lambda code
         run: |
-          # ensure lambda file exists
           if [ ! -f "${{ env.LAMBDA_HANDLER_FILE }}" ]; then
             echo "ERROR: ${LAMBDA_HANDLER_FILE} not found in repo root"
             exit 1
           fi
+          # create zip containing the handler (and any supporting files you need)
           zip -r "${{ env.LAMBDA_LOCAL_ZIP }}" "${{ env.LAMBDA_HANDLER_FILE }}"
 
       - name: Upload lambda.zip to S3
@@ -71,29 +85,20 @@ jobs:
 
       - name: Upload CloudFormation templates to S3
         run: |
+          # fail fast if templates are missing
+          if [ ! -f infra.yaml ]; then
+            echo "ERROR: infra.yaml missing"
+            exit 1
+          fi
+          if [ ! -f iris-mlops-pipeline.yaml ]; then
+            echo "ERROR: iris-mlops-pipeline.yaml missing"
+            exit 1
+          fi
           aws s3 cp infra.yaml "s3://${{ env.S3_BUCKET }}/${{ env.INFRA_TEMPLATE_KEY }}"
           aws s3 cp iris-mlops-pipeline.yaml "s3://${{ env.S3_BUCKET }}/${{ env.PIPELINE_TEMPLATE_KEY }}"
 
-      - name: (Optional) Update Lambda code from S3 (if Lambda exists)
-        run: |
-          # If the Lambda already exists we replace code from S3 (no harm if it doesn't; command will fail silently)
-          LAMBDA_NAME="${{ secrets.LAMBDA_NAME }}"  # set the function name in repo secrets
-          if aws lambda get-function --function-name "$LAMBDA_NAME" >/dev/null 2>&1; then
-            aws lambda update-function-code \
-              --function-name "$LAMBDA_NAME" \
-              --s3-bucket "${{ env.S3_BUCKET }}" \
-              --s3-key "${{ env.LAMBDA_S3_KEY }}"
-            echo "Updated Lambda code for $LAMBDA_NAME"
-          else
-            echo "Lambda $LAMBDA_NAME does not exist yet — skip update"
-          fi
-        env:
-          AWS_REGION: ${{ env.AWS_REGION }}
-
       - name: Build payload.json for deployer Lambda
         run: |
-          # Build the payload the deployer expects.
-          # If your Lambda expects different names change keys below.
           cat > payload.json <<EOF
 {
   "InfraTemplateS3": "s3://${{ env.S3_BUCKET }}/${{ env.INFRA_TEMPLATE_KEY }}",
@@ -121,6 +126,7 @@ EOF
             echo "ERROR: set secret LAMBDA_NAME to your deployer Lambda function name"
             exit 1
           fi
+          echo "Invoking deployer Lambda: $LAMBDA_NAME"
           aws lambda invoke --function-name "$LAMBDA_NAME" --payload file://payload.json --cli-binary-format raw-in-base64-out response.json
           echo "Deployer response:"
           cat response.json
