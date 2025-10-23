@@ -151,14 +151,34 @@ Resources:
           ECR_IMAGE_URI: !Ref ECRImageURI
           S3_BUCKET_NAME: !Ref S3BucketName
           SAGEMAKER_ROLE_ARN: !Ref SageMakerRoleArn
+  LambdaVersion:
+    Type: AWS::Lambda::Version
+    Properties:
+      FunctionName: !Ref LambdaFunction
+      Description: Version published by CloudFormation
+
+  LambdaProdAlias:
+    Type: AWS::Lambda::Alias
+    Properties:
+      FunctionName: !Ref LambdaFunction
+      FunctionVersion: !GetAtt LambdaVersion.Version
+      Name: prod
+      Description: "Production alias for deployer Lambda"
+
 
 Outputs:
   LambdaName:
     Description: Name of the created Lambda
     Value: !Ref LambdaFunction
+
   LambdaArn:
-    Description: ARN of the Lambda
+    Description: ARN of the created Lambda
     Value: !GetAtt LambdaFunction.Arn
+
+  LambdaProdAliasArn:
+    Description: ARN of the prod alias for the deployer Lambda
+    Value: !GetAtt LambdaProdAlias.Arn
+
   LambdaRoleArn:
     Description: IAM role used by the Lambda
     Value: !GetAtt LambdaExecutionRole.Arn

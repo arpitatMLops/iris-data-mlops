@@ -177,14 +177,35 @@ jobs:
               print(f.read())
           PY
 
-      - name: Invoke deployer Lambda
+      - name: Invoke deployer Lambda (invoke alias from CFN outputs)
+        id: invoke_deployer
+        env:
+          STACK_NAME: iris-mlops-lambda-deployer
         run: |
-          LAMBDA_NAME="${{ secrets.LAMBDA_NAME }}"
-          if [ -z "$LAMBDA_NAME" ]; then
-            echo "ERROR: set secret LAMBDA_NAME to your deployer Lambda function name"
+          set -euo pipefail
+
+          echo "Fetching Lambda prod alias ARN from CloudFormation stack: $STACK_NAME"
+          LAMBDA_ALIAS_ARN=$(aws cloudformation describe-stacks \
+            --stack-name "$STACK_NAME" \
+            --query "Stacks[0].Outputs[?OutputKey=='LambdaProdAliasArn'].OutputValue" \
+            --output text || echo "")
+
+          if [ -z "$LAMBDA_ALIAS_ARN" ] || [ "$LAMBDA_ALIAS_ARN" = "None" ]; then
+            echo "ERROR: LambdaProdAliasArn output not found in stack $STACK_NAME"
+            aws cloudformation describe-stacks --stack-name "$STACK_NAME" --output json
             exit 1
           fi
-          echo "Invoking deployer Lambda: $LAMBDA_NAME"
-          aws lambda invoke --function-name "$LAMBDA_NAME" --payload file://payload.json --cli-binary-format raw-in-base64-out response.json
+
+          echo "Invoking deployer Lambda alias: $LAMBDA_ALIAS_ARN"
+          aws lambda invoke \
+            --function-name "$LAMBDA_ALIAS_ARN" \
+            --payload file://payload.json \
+            --cli-binary-format raw-in-base64-out \
+            response.json || true
+
           echo "Deployer response:"
-          cat response.json
+          cat response.json || true
+
+          echo "response<<EOF" >> $GITHUB_OUTPUT
+          cat response.json >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
