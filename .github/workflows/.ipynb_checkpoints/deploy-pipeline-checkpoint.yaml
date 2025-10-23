@@ -132,7 +132,9 @@ jobs:
               "S3BucketName": S3_BUCKET,
               "SageMakerRoleArn": SAGEMAKER_ROLE_ARN
             },
-            "Capabilities": ["CAPABILITY_NAMED_IAM"]
+            "Capabilities": ["CAPABILITY_NAMED_IAM"],
+            "InfraStackName": "iris-mlops-infra",
+            "PipelineStackName": "iris-mlops-pipeline"
           }
           
           with open("payload.json","w") as f:
