@@ -203,9 +203,10 @@ jobs:
             --cli-binary-format raw-in-base64-out \
             response.json || true
 
-          echo "Deployer response:"
-          cat response.json || true
+          if [ ! -f response.json ]; then
+          echo "{}" > response.json
+          fi
 
           echo "response<<EOF" >> $GITHUB_OUTPUT
-          cat response.json >> $GITHUB_OUTPUT
+          cat response.json >> $GITHUB_OUTPUT || true
           echo "EOF" >> $GITHUB_OUTPUT
