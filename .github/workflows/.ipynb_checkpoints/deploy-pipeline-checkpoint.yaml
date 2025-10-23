@@ -105,45 +105,45 @@ jobs:
           SAGEMAKER_ROLE_ARN: ${{ secrets.SAGEMAKER_ROLE_ARN }}
         run: |
           python3 - <<'PY'
-import json, os, sys
+          import json, os, sys
 
-AWS_ACCOUNT_ID = os.getenv("AWS_ACCOUNT_ID","")
-AWS_REGION = os.getenv("AWS_REGION","eu-north-1")
-S3_BUCKET = os.getenv("S3_BUCKET")
-INFRA_KEY = os.getenv("INFRA_TEMPLATE_KEY")
-PIPELINE_KEY = os.getenv("PIPELINE_TEMPLATE_KEY")
-ECR_REPOSITORY = os.getenv("ECR_REPOSITORY")
-ECR_IMAGE_TAG = os.getenv("ECR_IMAGE_TAG")
-SAGEMAKER_ROLE_ARN = os.getenv("SAGEMAKER_ROLE_ARN","")
+          AWS_ACCOUNT_ID = os.getenv("AWS_ACCOUNT_ID","")
+          AWS_REGION = os.getenv("AWS_REGION","eu-north-1")
+          S3_BUCKET = os.getenv("S3_BUCKET")
+          INFRA_KEY = os.getenv("INFRA_TEMPLATE_KEY")
+          PIPELINE_KEY = os.getenv("PIPELINE_TEMPLATE_KEY")
+          ECR_REPOSITORY = os.getenv("ECR_REPOSITORY")
+          ECR_IMAGE_TAG = os.getenv("ECR_IMAGE_TAG")
+          SAGEMAKER_ROLE_ARN = os.getenv("SAGEMAKER_ROLE_ARN","")
 
-if not S3_BUCKET or not INFRA_KEY or not PIPELINE_KEY:
-    print("ERROR: required env vars missing (S3_BUCKET/INFRA_TEMPLATE_KEY/PIPELINE_TEMPLATE_KEY)", file=sys.stderr)
-    sys.exit(2)
+          if not S3_BUCKET or not INFRA_KEY or not PIPELINE_KEY:
+          print("ERROR: required env vars missing (S3_BUCKET/INFRA_TEMPLATE_KEY/PIPELINE_TEMPLATE_KEY)", file=sys.stderr)
+          sys.exit(2)
 
-image_uri = f"{AWS_ACCOUNT_ID}.dkr.ecr.{AWS_REGION}.amazonaws.com/{ECR_REPOSITORY}:{ECR_IMAGE_TAG}"
+          image_uri = f"{AWS_ACCOUNT_ID}.dkr.ecr.{AWS_REGION}.amazonaws.com/{ECR_REPOSITORY}:{ECR_IMAGE_TAG}"
 
-payload = {
-  "InfraTemplateS3": f"s3://{S3_BUCKET}/{INFRA_KEY}",
-  "PipelineTemplateS3": f"s3://{S3_BUCKET}/{PIPELINE_KEY}",
-  "InfraParameters": {
-    "ProjectName": "iris-mlops",
-    "SageMakerRoleArn": SAGEMAKER_ROLE_ARN
-  },
-  "PipelineParameters": {
-    "ProjectName": "iris-mlops",
-    "ECRImageURI": image_uri,
-    "S3BucketName": S3_BUCKET,
-    "SageMakerRoleArn": SAGEMAKER_ROLE_ARN
-  },
-  "Capabilities": ["CAPABILITY_NAMED_IAM"]
-}
-
-with open("payload.json","w") as f:
-    json.dump(payload, f, indent=2)
-print("payload.json written:")
-with open("payload.json") as f:
-    print(f.read())
-PY
+          payload = {
+          "InfraTemplateS3": f"s3://{S3_BUCKET}/{INFRA_KEY}",
+          "PipelineTemplateS3": f"s3://{S3_BUCKET}/{PIPELINE_KEY}",
+          "InfraParameters": {
+            "ProjectName": "iris-mlops",
+            "SageMakerRoleArn": SAGEMAKER_ROLE_ARN
+          },
+          "PipelineParameters": {
+            "ProjectName": "iris-mlops",
+            "ECRImageURI": image_uri,
+            "S3BucketName": S3_BUCKET,
+            "SageMakerRoleArn": SAGEMAKER_ROLE_ARN
+          },
+          "Capabilities": ["CAPABILITY_NAMED_IAM"]
+        }
+        
+        with open("payload.json","w") as f:
+            json.dump(payload, f, indent=2)
+        print("payload.json written:")
+        with open("payload.json") as f:
+            print(f.read())
+        PY
 
       - name: Invoke deployer Lambda
         run: |
