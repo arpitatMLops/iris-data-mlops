@@ -15,87 +15,17 @@ Parameters:
     Type: String
     Description: ARN of the SageMaker Execution Role used by Processing/Training
 
+  # New: infra-provided resources (imported / passed from infra stack)
+  StepFnLogGroupArn:
+    Type: String
+    Description: ARN of the CloudWatch Log Group used by Step Functions (from infra stack)
+  RoleStepFunctionsArn:
+    Type: String
+    Description: ARN of the IAM Role for Step Functions (from infra stack)
+
 Resources:
-  StepFnLogGroup:
-    Type: AWS::Logs::LogGroup
-    Properties:
-      LogGroupName: !Sub "/aws/stepfunctions/${ProjectName}-pipeline"
-      RetentionInDays: 14
-
-  # IAM role for Step Functions (no explicit RoleName)
-  RoleStepFunctions:
-    Type: AWS::IAM::Role
-    Properties:
-      AssumeRolePolicyDocument:
-        Version: '2012-10-17'
-        Statement:
-          - Effect: Allow
-            Principal:
-              Service: states.amazonaws.com
-            Action: sts:AssumeRole
-      MaxSessionDuration: 3600
-      Path: "/"
-      Policies:
-        - PolicyName: StepFunctionSageMakerAccessInline
-          PolicyDocument:
-            Version: '2012-10-17'
-            Statement:
-              # X-Ray permissions
-              - Effect: Allow
-                Action:
-                  - xray:PutTraceSegments
-                  - xray:PutTelemetryRecords
-                  - xray:GetSamplingRules
-                  - xray:GetSamplingTargets
-                Resource: '*'
-
-              # SageMaker training/processing actions
-              - Effect: Allow
-                Action:
-                  - sagemaker:CreateTrainingJob
-                  - sagemaker:DescribeTrainingJob
-                  - sagemaker:StopTrainingJob
-                  - sagemaker:CreateProcessingJob
-                  - sagemaker:DescribeProcessingJob
-                  - sagemaker:StopProcessingJob
-                  - sagemaker:ListTags
-                  - sagemaker:AddTags
-                  - sagemaker:DeleteTags
-                Resource:
-                  - arn:aws:sagemaker:eu-north-1:*:training-job/*
-                  - arn:aws:sagemaker:eu-north-1:*:processing-job/*
-
-              # Allow passing the SageMaker execution role to SageMaker
-              - Effect: Allow
-                Action: iam:PassRole
-                Resource: !Ref SageMakerRoleArn
-                Condition:
-                  StringEquals:
-                    iam:PassedToService: sagemaker.amazonaws.com
-
-              # Events (Step Functions ↔ SageMaker job events)
-              - Effect: Allow
-                Action:
-                  - events:PutTargets
-                  - events:PutRule
-                  - events:DescribeRule
-                Resource:
-                  - arn:aws:events:eu-north-1:*:rule/StepFunctionsGetEventsForSageMakerProcessingJobsRule
-                  - arn:aws:events:eu-north-1:*:rule/StepFunctionsGetEventsForSageMakerTrainingJobsRule
-
-              # CloudWatch Logs / Log delivery permissions
-              - Effect: Allow
-                Action:
-                  - logs:CreateLogDelivery
-                  - logs:GetLogDelivery
-                  - logs:UpdateLogDelivery
-                  - logs:DeleteLogDelivery
-                  - logs:ListLogDeliveries
-                  - logs:PutResourcePolicy
-                  - logs:DescribeLogGroups
-                  - logs:CreateLogStream
-                  - logs:PutLogEvents
-                Resource: "*"
+  # Note: StepFnLogGroup and RoleStepFunctions are provided by the infra stack.
+  # This template uses those passed-in ARNs instead of creating them here.
 
   # --- State machine (parameterized) ---
   StateMachine3682c0c9:
@@ -103,7 +33,7 @@ Resources:
     Properties:
       StateMachineName: !Sub "${ProjectName}-pipeline"
       StateMachineType: STANDARD
-      RoleArn: !GetAtt RoleStepFunctions.Arn
+      RoleArn: !Ref RoleStepFunctionsArn
       EncryptionConfiguration:
         Type: AWS_OWNED_KEY
       LoggingConfiguration:
@@ -111,7 +41,8 @@ Resources:
         IncludeExecutionData: true
         Destinations:
           - CloudWatchLogsLogGroup:
-              LogGroupArn: !GetAtt StepFnLogGroup.Arn
+              # add trailing :* so Step Functions can write to log streams under this group
+              LogGroupArn: !Sub "${StepFnLogGroupArn}"
       Definition:
         Comment: Iris preprocess -> train -> inference
         StartAt: Preprocess
@@ -209,6 +140,7 @@ Outputs:
   StateMachineArn:
     Description: Step Functions state machine ARN
     Value: !Ref StateMachine3682c0c9
+
   StepFunctionsRoleArn:
-    Description: Step Functions role ARN
-    Value: !GetAtt RoleStepFunctions.Arn
+    Description: (Echo) Step Functions role ARN used by state machine
+    Value: !Ref RoleStepFunctionsArn
