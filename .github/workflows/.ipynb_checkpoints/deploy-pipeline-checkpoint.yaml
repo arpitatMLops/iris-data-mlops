@@ -222,3 +222,9 @@ jobs:
 
           RAW=$(jq -c '.' response.json || echo "{}")
           echo "raw_response=$RAW" >> $GITHUB_OUTPUT
+          
+      - name: Extract and print run ID
+        run: |
+          RUN_ID=$(jq -r '.executionArn' response.json | awk -F: '{print $NF}')
+          echo "Latest Step Function Run ID: $RUN_ID"
+
