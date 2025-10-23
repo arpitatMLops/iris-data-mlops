@@ -177,7 +177,7 @@ Outputs:
 
   LambdaProdAliasArn:
     Description: ARN of the prod alias for the deployer Lambda
-    Value: !GetAtt LambdaProdAlias.Arn
+    Value: !Sub "${LambdaFunction.Arn}:prod"
 
   LambdaRoleArn:
     Description: IAM role used by the Lambda
