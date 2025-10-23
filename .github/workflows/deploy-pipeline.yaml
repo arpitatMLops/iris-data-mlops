@@ -55,13 +55,10 @@ jobs:
 
       - name: Build and push Docker image to ECR
         env:
-          ECR_REGISTRY: ${{ env.ECR_REGISTRY || steps.acct.outputs.AWS_ACCOUNT_ID }}
+          ECR_REGISTRY: ${{ steps.acct.outputs.AWS_ACCOUNT_ID }}
         run: |
-          # compute registry and image
           ECR_REGISTRY="${{ steps.acct.outputs.AWS_ACCOUNT_ID }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com"
           IMAGE="${ECR_REGISTRY}/${{ env.ECR_REPOSITORY }}:${{ env.ECR_IMAGE_TAG }}"
-
-          # if Dockerfile exists, build and push; otherwise skip
           if [ -f Dockerfile ]; then
             docker build -t "$IMAGE" .
             docker push "$IMAGE"
@@ -76,7 +73,6 @@ jobs:
             echo "ERROR: ${LAMBDA_HANDLER_FILE} not found in repo root"
             exit 1
           fi
-          # create zip containing the handler (and any supporting files you need)
           zip -r "${{ env.LAMBDA_LOCAL_ZIP }}" "${{ env.LAMBDA_HANDLER_FILE }}"
 
       - name: Upload lambda.zip to S3
@@ -85,7 +81,6 @@ jobs:
 
       - name: Upload CloudFormation templates to S3
         run: |
-          # fail fast if templates are missing
           if [ ! -f infra.yaml ]; then
             echo "ERROR: infra.yaml missing"
             exit 1
@@ -98,26 +93,57 @@ jobs:
           aws s3 cp iris-mlops-pipeline.yaml "s3://${{ env.S3_BUCKET }}/${{ env.PIPELINE_TEMPLATE_KEY }}"
 
       - name: Build payload.json for deployer Lambda
+        env:
+          # explicitly pass in the step output and secrets so Python can read them as env vars
+          AWS_ACCOUNT_ID: ${{ steps.acct.outputs.AWS_ACCOUNT_ID }}
+          AWS_REGION: ${{ env.AWS_REGION }}
+          S3_BUCKET: ${{ env.S3_BUCKET }}
+          INFRA_TEMPLATE_KEY: ${{ env.INFRA_TEMPLATE_KEY }}
+          PIPELINE_TEMPLATE_KEY: ${{ env.PIPELINE_TEMPLATE_KEY }}
+          ECR_REPOSITORY: ${{ env.ECR_REPOSITORY }}
+          ECR_IMAGE_TAG: ${{ env.ECR_IMAGE_TAG }}
+          SAGEMAKER_ROLE_ARN: ${{ secrets.SAGEMAKER_ROLE_ARN }}
         run: |
-          cat > payload.json <<EOF
-{
-  "InfraTemplateS3": "s3://${{ env.S3_BUCKET }}/${{ env.INFRA_TEMPLATE_KEY }}",
-  "PipelineTemplateS3": "s3://${{ env.S3_BUCKET }}/${{ env.PIPELINE_TEMPLATE_KEY }}",
+          python3 - <<'PY'
+import json, os, sys
+
+AWS_ACCOUNT_ID = os.getenv("AWS_ACCOUNT_ID","")
+AWS_REGION = os.getenv("AWS_REGION","eu-north-1")
+S3_BUCKET = os.getenv("S3_BUCKET")
+INFRA_KEY = os.getenv("INFRA_TEMPLATE_KEY")
+PIPELINE_KEY = os.getenv("PIPELINE_TEMPLATE_KEY")
+ECR_REPOSITORY = os.getenv("ECR_REPOSITORY")
+ECR_IMAGE_TAG = os.getenv("ECR_IMAGE_TAG")
+SAGEMAKER_ROLE_ARN = os.getenv("SAGEMAKER_ROLE_ARN","")
+
+if not S3_BUCKET or not INFRA_KEY or not PIPELINE_KEY:
+    print("ERROR: required env vars missing (S3_BUCKET/INFRA_TEMPLATE_KEY/PIPELINE_TEMPLATE_KEY)", file=sys.stderr)
+    sys.exit(2)
+
+image_uri = f"{AWS_ACCOUNT_ID}.dkr.ecr.{AWS_REGION}.amazonaws.com/{ECR_REPOSITORY}:{ECR_IMAGE_TAG}"
+
+payload = {
+  "InfraTemplateS3": f"s3://{S3_BUCKET}/{INFRA_KEY}",
+  "PipelineTemplateS3": f"s3://{S3_BUCKET}/{PIPELINE_KEY}",
   "InfraParameters": {
     "ProjectName": "iris-mlops",
-    "SageMakerRoleArn": "${{ secrets.SAGEMAKER_ROLE_ARN }}"
+    "SageMakerRoleArn": SAGEMAKER_ROLE_ARN
   },
   "PipelineParameters": {
     "ProjectName": "iris-mlops",
-    "ECRImageURI": "${{ steps.acct.outputs.AWS_ACCOUNT_ID }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com/${{ env.ECR_REPOSITORY }}:${{ env.ECR_IMAGE_TAG }}",
-    "S3BucketName": "${{ env.S3_BUCKET }}",
-    "SageMakerRoleArn": "${{ secrets.SAGEMAKER_ROLE_ARN }}"
+    "ECRImageURI": image_uri,
+    "S3BucketName": S3_BUCKET,
+    "SageMakerRoleArn": SAGEMAKER_ROLE_ARN
   },
   "Capabilities": ["CAPABILITY_NAMED_IAM"]
 }
-EOF
-          echo "payload.json prepared:"
-          jq . payload.json || cat payload.json
+
+with open("payload.json","w") as f:
+    json.dump(payload, f, indent=2)
+print("payload.json written:")
+with open("payload.json") as f:
+    print(f.read())
+PY
 
       - name: Invoke deployer Lambda
         run: |
